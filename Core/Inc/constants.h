@@ -1,0 +1,11 @@
+#ifndef CONSTANTS_H
+#define CONSTANTS_H
+
+#define RECURRENCES 1
+#define DAC_SAMPLES 1024
+#define SAMPLES 512
+#define GRAPH_SAMPLES 128
+#define HALF_SAMPLES (SAMPLES/2)
+#define ADC_ACQ_TIMEOUT (1e3)
+
+#endif
