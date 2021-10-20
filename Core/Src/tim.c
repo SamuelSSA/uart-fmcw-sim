@@ -301,7 +301,10 @@ void HAL_TIM_Base_MspDeInit(TIM_HandleTypeDef* tim_baseHandle)
 }
 
 /* USER CODE BEGIN 1 */
-
+void reload_timer_period(TIM_TypeDef *TIMx, uint32_t period)
+{
+	TIMx->ARR = period;
+}
 /* USER CODE END 1 */
 
 /************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/

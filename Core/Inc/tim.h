@@ -46,7 +46,7 @@ void MX_TIM4_Init(void);
 void MX_TIM8_Init(void);
 
 /* USER CODE BEGIN Prototypes */
-
+void reload_timer_period(TIM_TypeDef *TIMx, uint32_t period);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

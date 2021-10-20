@@ -11,7 +11,7 @@
 #include "usart.h"
 
 #define UART_RX_TIMEOUT 40
-#define UART_TX_TIMEOUT UART_RX_TIMEOUT
+#define UART_TX_TIMEOUT 400
 
 int uart_rx_data(void *buffer, uint32_t n_bytes)
 {

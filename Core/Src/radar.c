@@ -1,21 +1,37 @@
 #include "radar.h"
 
+#include "tim.h"
 #include "arm_math.h"
 #include "arm_const_structs.h"
 #include "adc.h"
 #include "dac.h"
-#include "tim.h"
+
 #include "waveform.h"
 #include "constants.h"
 #include "main.h"
 #include "serial_communication.h"
 #include "cobs_encoding.h"
 
+
 #define GRAPHS_NUM 4
 
-volatile ALIGN_32BYTES (__IO uint16_t   g_video[SAMPLES]);
-volatile ALIGN_32BYTES (__IO uint16_t   g_video_1[SAMPLES]);
-volatile ALIGN_32BYTES (__IO float data_output[GRAPHS_NUM][GRAPH_SAMPLES]);
+ALIGN_32BYTES (__IO uint16_t   dma_buffer_0[SAMPLES]);
+ALIGN_32BYTES (__IO uint16_t   dma_buffer_1[SAMPLES]);
+
+ALIGN_32BYTES (__IO uint16_t   g_video[SAMPLES]);
+ALIGN_32BYTES (__IO uint16_t   g_video_1[SAMPLES]);
+ALIGN_32BYTES (__IO float data_output[GRAPHS_NUM][GRAPH_SAMPLES]);
+
+typedef struct DATA_PACKET
+{
+    char init_of_packet[4];
+    uint8_t code;
+    uint8_t reserved[3];
+    float data_output[GRAPHS_NUM][GRAPH_SAMPLES];
+    char end_of_packet[4];
+};
+
+struct DATA_PACKET g_data_packet = {.init_of_packet = "ini", .code = 0x80,  .end_of_packet = "end"};
 
 float teste_tx2[] = {1.0,2.0,3.0};
 
@@ -24,6 +40,7 @@ float *g_fft_mag;
 float *f_adc_samples;
 
 uint64_t _radar_start_time = 0;
+static bool new_data = false;
 
 enum STATE_MACHINE
 {
@@ -85,74 +102,52 @@ void update_state(enum STATE_MACHINE *st)
 
 void radar_routine()
 {
-	static bool new_data = false;
-	static bool reload   = false;
-	static enum STATE_MACHINE state = STANDBY;
-	const int output_mem_size = GRAPHS_NUM*GRAPH_SAMPLES*sizeof(float);
-
-	if(state == STANDBY)
+	for(int i=0, k=0; i < GRAPH_SAMPLES; i++, k+=4)
 	{
-
+		g_data_packet.data_output[0][i] = (float) g_video[k];
 	}
-	else if(state == ACQUISITIONING)
-	{
+	SCB_InvalidateDCache_by_Addr((uint32_t*) g_video, sizeof(g_video));
 
+	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=4)
+	{
+		g_data_packet.data_output[1][i] = (float) g_video_1[k];
 	}
-	else if(state == PROCESSING)
+	SCB_InvalidateDCache_by_Addr((uint32_t*) g_video_1, sizeof(g_video_1));
+
+	dsp();
+
+	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=2)
 	{
-		dsp();
+		g_data_packet.data_output[2][i] = g_fft_mag[i];
 	}
-	else if(state == OUTPUT_PROCESSING)
+	g_data_packet.data_output[2][0] = 0;
+
+	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=2)
 	{
-		for(int i=0, k=0; i < GRAPH_SAMPLES; i++, k+=4)
-		{
-			data_output[0][i] = (float) g_video[k];
-		}
-
-		for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=4)
-		{
-			data_output[1][i] = (float) g_video_1[k];
-		}
-
-		for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=2)
-		{
-			data_output[2][i] = g_fft_mag[i];
-		}
-		data_output[2][0] = 0;
-
-		for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=2)
-		{
-			data_output[3][i] = g_fft_mag[i + (GRAPH_SAMPLES - 1)];
-		}
-		data_output[3][0] = 0;
+		g_data_packet.data_output[3][i] = g_fft_mag[i + (GRAPH_SAMPLES - 1)];
 	}
-	else if(state == SEND_DATA)
+	g_data_packet.data_output[3][0] = 0;
+
+	uint64_t time_now = get_1ms_tick_counter();
+	static uint64_t last_time = 0;
+	uint64_t time_elapsed = time_now - last_time;
+	if(time_elapsed > 100)
 	{
-		char teste_tx[] = "Oi Mundo\n";
-		//float teste_tx2[] = {1.0,2.0,3.0};
-
-		uart_tx_data(teste_tx2,12);
-
-#if 0
-		uart_tx_data(data_output,output_mem_size);
-		SCB_InvalidateDCache_by_Addr((uint32_t*) &g_video, SAMPLES * sizeof(float));
-		SCB_InvalidateDCache_by_Addr((uint32_t*) &data_output, output_mem_size);
-#endif
-/*
 		if(new_data == true)
 		{
-			//udp_send_data((void*)data_output, output_mem_size);
-			SCB_InvalidateDCache_by_Addr((uint32_t*) &g_video, SAMPLES * sizeof(float));
-			SCB_InvalidateDCache_by_Addr((uint32_t*) &data_output, output_mem_size);
+
+			int tx_ret = uart_tx_data(&g_data_packet.init_of_packet, sizeof(g_data_packet));
+			SCB_InvalidateDCache_by_Addr((uint32_t*) &g_data_packet, sizeof(g_data_packet));
+
+			if(tx_ret != 0)
+			{
+				//HAL != 0
+			}
+
 			new_data = false;
 		}
-*/
+		last_time = get_1ms_tick_counter();
 	}
-	else if(state == RECEIVE_DATA)
-	{
-		//uart_rx_data
-	}
-	update_state(&state);
 }
 
 void init_hardware()
@@ -179,9 +174,9 @@ void init_hardware()
 	init_adc();
 	init_timers();
 
-	//set_out_freq(4000,FMCW_ECHO);
-	//reload_timer_period(TIM4, 10000);
-	//reload_timer_period(TIM3, 50000);
+	//set_out_freq((float)4000.0,FMCW_ECHO);
+	reload_timer_period(TIM4, 10000);
+	reload_timer_period(TIM3, 50000);
 }
 // INP15 -> A0 = Sinal do radar -> ADC trigado pelo TIMER 3
 // Canal do DAC Channel 2(PA5) ligado ao A0 -> DAC trigado pelo TIMER 4
@@ -257,6 +252,8 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
 	if(hadc == &hadc1)
 	{
+		new_data = true;
+
 	}
 	else if(hadc == &hadc3)
 	{
