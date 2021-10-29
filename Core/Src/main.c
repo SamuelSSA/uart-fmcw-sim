@@ -75,6 +75,7 @@ int main(void)
   /* USER CODE END 1 */
 
   /* MPU Configuration--------------------------------------------------------*/
+
   MPU_Config();
 
   /* Enable I-Cache---------------------------------------------------------*/
@@ -114,6 +115,8 @@ int main(void)
   MX_TIM8_Init();
   MX_ADC3_Init();
   /* USER CODE BEGIN 2 */
+
+
   HAL_Delay(1000);
   init_hardware();
   /* USER CODE END 2 */

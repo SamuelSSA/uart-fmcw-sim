@@ -12,7 +12,6 @@
 #include "serial_communication.h"
 #include "cobs_encoding.h"
 
-
 #define GRAPHS_NUM 4
 
 ALIGN_32BYTES (__IO uint16_t   dma_buffer_0[SAMPLES]);
@@ -33,37 +32,12 @@ typedef struct DATA_PACKET
 
 struct DATA_PACKET g_data_packet = {.init_of_packet = "ini", .code = 0x80,  .end_of_packet = "end"};
 
-float teste_tx2[] = {1.0,2.0,3.0};
-
 float *g_fft_result;
 float *g_fft_mag;
 float *f_adc_samples;
 
 uint64_t _radar_start_time = 0;
 static bool new_data = false;
-
-enum STATE_MACHINE
-{
-	STANDBY,
-	ACQUISITIONING,
-	PROCESSING,
-	OUTPUT_PROCESSING,
-	SEND_DATA,
-	RECEIVE_DATA,
-	NUM_OF_STATES
-};
-
-enum
-{
-	UP_CHIRP,
-	DOWN_CHIRP
-};
-
-enum OUTPUT
-{
-	FMCW_ECHO,
-	FMCW_REF
-};
 
 void dsp()
 {
@@ -100,8 +74,26 @@ void update_state(enum STATE_MACHINE *st)
 	}
 }
 
+void toggle_radar_ref(enum FMCW_REF ref)
+{
+	static bool pin_value_PG2 = true;
+	static bool pin_value_PG3 = false;
+
+	if(ref == REF_PG2)
+	{
+		HAL_GPIO_WritePin(GPIOG, GPIO_PIN_2, pin_value_PG2);
+		pin_value_PG2 = !pin_value_PG2;
+	}
+	else if(ref == REF_PG3)
+	{
+		HAL_GPIO_WritePin(GPIOG, GPIO_PIN_3, pin_value_PG3);
+		pin_value_PG3 = !pin_value_PG3;
+	}
+}
+
 void radar_routine()
 {
+#if 0
 	for(int i=0, k=0; i < GRAPH_SAMPLES; i++, k+=4)
 	{
 		g_data_packet.data_output[0][i] = (float) g_video[k];
@@ -114,17 +106,31 @@ void radar_routine()
 	}
 	SCB_InvalidateDCache_by_Addr((uint32_t*) g_video_1, sizeof(g_video_1));
 
+#endif
+
 	dsp();
 
-	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=2)
+	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=4)
 	{
-		g_data_packet.data_output[2][i] = g_fft_mag[i];
+		g_data_packet.data_output[0][i] = g_fft_mag[i];
+	}
+	g_data_packet.data_output[0][0] = 0;
+
+	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=4)
+	{
+		g_data_packet.data_output[1][i] = g_fft_mag[i + (GRAPH_SAMPLES - 1)];
+	}
+	g_data_packet.data_output[1][0] = 0;
+
+	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=4)
+	{
+		g_data_packet.data_output[2][i] = g_fft_mag[i + ((GRAPH_SAMPLES* 2) - 1)];
 	}
 	g_data_packet.data_output[2][0] = 0;
 
-	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=2)
+	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=4)
 	{
-		g_data_packet.data_output[3][i] = g_fft_mag[i + (GRAPH_SAMPLES - 1)];
+		g_data_packet.data_output[3][i] = g_fft_mag[i +  + ((GRAPH_SAMPLES* 3) - 1)];
 	}
 	g_data_packet.data_output[3][0] = 0;
 
@@ -135,7 +141,6 @@ void radar_routine()
 	{
 		if(new_data == true)
 		{
-
 			int tx_ret = uart_tx_data(&g_data_packet.init_of_packet, sizeof(g_data_packet));
 			SCB_InvalidateDCache_by_Addr((uint32_t*) &g_data_packet, sizeof(g_data_packet));
 
@@ -143,7 +148,6 @@ void radar_routine()
 			{
 				//HAL != 0
 			}
-
 			new_data = false;
 		}
 		last_time = get_1ms_tick_counter();
@@ -174,9 +178,7 @@ void init_hardware()
 	init_adc();
 	init_timers();
 
-	//set_out_freq((float)4000.0,FMCW_ECHO);
-	reload_timer_period(TIM4, 10000);
-	reload_timer_period(TIM3, 50000);
+	set_out_freq((float)16.0, FMCW_ECHO);
 }
 // INP15 -> A0 = Sinal do radar -> ADC trigado pelo TIMER 3
 // Canal do DAC Channel 2(PA5) ligado ao A0 -> DAC trigado pelo TIMER 4
@@ -207,7 +209,7 @@ void init_timers()
 void init_dac()
 {
 	HAL_StatusTypeDef ret;
-	ret = HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1,(uint32_t *)waveform, DAC_SAMPLES,DAC_ALIGN_12B_R);
+	ret = HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1,(uint32_t *)dac_waveform, DAC_SAMPLES,DAC_ALIGN_12B_R);
 	if(ret != HAL_OK)
 	{
 		Error_Handler();
@@ -243,6 +245,35 @@ void init_adc()
 	}
 }
 
+void set_out_freq(float frequency, enum OUTPUT output)
+{
+	const float timer_freq = 200e6;
+
+	uint32_t dac_samples_size = sizeof(waveform)/sizeof(uint16_t);
+	uint32_t timer_period;
+
+	if(output == FMCW_ECHO)
+	{
+		timer_period = (uint32_t) (timer_freq / ((float)(dac_samples_size * frequency)));
+		reload_timer_period(TIM4, timer_period);
+	}
+	else if(output == FMCW_REF)
+	{
+		timer_period = (uint32_t) (timer_freq / ((float)(DAC_CH2_SAMPLES * frequency)));
+		reload_timer_period(TIM8, timer_period);
+	}
+}
+
+void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac)
+{
+	toggle_radar_ref(REF_PG2);
+}
+
+void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef *hdac)
+{
+	toggle_radar_ref(REF_PG3);
+}
+
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
 {
 
@@ -260,25 +291,13 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 	}
 }
 
-void set_out_freq(float frequency, enum OUTPUT output)
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-	float freq_dac = 75e6;
-	uint32_t timer_period = 1;
+	static float frequency = 4000;
 
-	timer_period = (uint32_t) (freq_dac / ((float)(DAC_SAMPLES * frequency)));
-
-	if(output == FMCW_ECHO)
+	if(GPIO_Pin == GPIO_PIN_13)
 	{
-		reload_timer_period(TIM4, timer_period);
-	}
-	else if(output == FMCW_REF)
-	{
-		reload_timer_period(TIM8, timer_period);
+		frequency = frequency + (16*100);
+		set_out_freq(frequency, FMCW_ECHO);
 	}
 }
-
-void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac)
-{
-
-}
-
