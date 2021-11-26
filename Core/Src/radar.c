@@ -26,6 +26,7 @@ ALIGN_32BYTES (__IO uint16_t   g_video_1[SAMPLES]);
 ALIGN_32BYTES (__IO float data_output[GRAPHS_NUM][GRAPH_SAMPLES]);
 
 #define AD_TO_VOLT ( (3.3f * 2.0f) /4096.0f)
+#define AD_TO_VOLT_TIME (3.3f /65536.0f)
 
 typedef struct DATA_PACKET
 {
@@ -169,13 +170,13 @@ void radar_routine()
 #else
 	for(int i=0, k=0; i < GRAPH_SAMPLES; i++, k+=4)
 	{
-		g_data_packet.data_output[0][i] = (float) g_video[k];
+		g_data_packet.data_output[0][i] = (float) g_video[k] * AD_TO_VOLT_TIME;
 	}
 	SCB_InvalidateDCache_by_Addr((uint32_t*) g_video, sizeof(g_video));
 
 	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=4)
 	{
-		g_data_packet.data_output[1][i] = (float) g_video_1[k];
+		g_data_packet.data_output[1][i] = (float) g_video_1[k] * AD_TO_VOLT_TIME;
 	}
 	SCB_InvalidateDCache_by_Addr((uint32_t*) g_video_1, sizeof(g_video_1));
 
