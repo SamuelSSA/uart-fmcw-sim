@@ -36,7 +36,7 @@ void init_timers();
 void init_dac();
 void init_adc();
 
-void dsp();
+void dsp(float* mag_max_rb, uint32_t* index_max_rb);
 void update_state(enum STATE_MACHINE *st);
 void radar_routine();
 void set_out_freq(float frequency, enum OUTPUT output);

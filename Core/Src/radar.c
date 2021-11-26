@@ -12,6 +12,10 @@
 #include "serial_communication.h"
 #include "cobs_encoding.h"
 
+//#define TEST_SPAM_DAC
+//#define VIRTUAL_REF
+//#define FFT_FULL
+
 #define GRAPHS_NUM 4
 
 ALIGN_32BYTES (__IO uint16_t   dma_buffer_0[SAMPLES]);
@@ -20,6 +24,8 @@ ALIGN_32BYTES (__IO uint16_t   dma_buffer_1[SAMPLES]);
 ALIGN_32BYTES (__IO uint16_t   g_video[SAMPLES]);
 ALIGN_32BYTES (__IO uint16_t   g_video_1[SAMPLES]);
 ALIGN_32BYTES (__IO float data_output[GRAPHS_NUM][GRAPH_SAMPLES]);
+
+#define AD_TO_VOLT ( (3.3f * 2.0f) /4096.0f)
 
 typedef struct DATA_PACKET
 {
@@ -39,7 +45,7 @@ float *f_adc_samples;
 uint64_t _radar_start_time = 0;
 static bool new_data = false;
 
-void dsp()
+void dsp(float* mag_max_rb, uint32_t* index_max_rb)
 {
 	arm_status status;
 	arm_rfft_fast_instance_f32 fft_instance;
@@ -50,11 +56,13 @@ void dsp()
 
 	for(int i = 0; i < SAMPLES; i++)
 	{
-		f_adc_samples[i] = (float) g_video[i];
+		f_adc_samples[i] = ((float) g_video[i]) / 65535.0f;
 	}
 
 	arm_rfft_fast_f32(&fft_instance, f_adc_samples, g_fft_result, ifftFlag);
 	arm_cmplx_mag_f32(g_fft_result,g_fft_mag,HALF_SAMPLES);
+	g_fft_mag[0] = 0;
+	arm_max_f32(g_fft_mag, SAMPLES/2, mag_max_rb, index_max_rb);
 }
 
 uint64_t get_1ms_tick_counter()
@@ -108,31 +116,81 @@ void radar_routine()
 
 #endif
 
-	dsp();
+	static uint32_t index_serie[1000];
+	static uint64_t i = 0;
+	float max_magnitude;
+	static float freq;
 
+#ifdef TEST_SPAM_DAC
+	uint64_t time_now_test = get_1ms_tick_counter();
+	static uint64_t last_time_test = 0;
+	uint64_t time_elapsed_test = time_now_test - last_time_test;
+	if(time_elapsed_test > 100)
+	{
+		if(i >= 700)
+		{
+			int foo;
+			foo = 1;
+		}
+		dsp(&max_magnitude,&index_serie[i % 700]);
+		i++;
+		set_out_freq(freq, FMCW_ECHO);
+		freq = freq + 16.0;
+		last_time_test = get_1ms_tick_counter();
+	}
+#else
+	dsp(&max_magnitude,&index_serie[i % 600]);
+#endif
+
+#ifdef FFT_FULL
 	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=4)
 	{
-		g_data_packet.data_output[0][i] = g_fft_mag[i];
+		g_data_packet.data_output[0][i] = g_fft_mag[i] * AD_TO_VOLT;
 	}
 	g_data_packet.data_output[0][0] = 0;
 
 	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=4)
 	{
-		g_data_packet.data_output[1][i] = g_fft_mag[i + (GRAPH_SAMPLES - 1)];
+		g_data_packet.data_output[1][i] = g_fft_mag[i + (GRAPH_SAMPLES - 1)] * AD_TO_VOLT;
 	}
 	g_data_packet.data_output[1][0] = 0;
 
 	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=4)
 	{
-		g_data_packet.data_output[2][i] = g_fft_mag[i + ((GRAPH_SAMPLES* 2) - 1)];
+		g_data_packet.data_output[2][i] = g_fft_mag[i + ((GRAPH_SAMPLES* 2) - 1)] * AD_TO_VOLT;
 	}
 	g_data_packet.data_output[2][0] = 0;
 
 	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=4)
 	{
-		g_data_packet.data_output[3][i] = g_fft_mag[i +  + ((GRAPH_SAMPLES* 3) - 1)];
+		g_data_packet.data_output[3][i] = g_fft_mag[i +  + ((GRAPH_SAMPLES* 3) - 1)] * AD_TO_VOLT;
 	}
 	g_data_packet.data_output[3][0] = 0;
+#else
+	for(int i=0, k=0; i < GRAPH_SAMPLES; i++, k+=4)
+	{
+		g_data_packet.data_output[0][i] = (float) g_video[k];
+	}
+	SCB_InvalidateDCache_by_Addr((uint32_t*) g_video, sizeof(g_video));
+
+	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=4)
+	{
+		g_data_packet.data_output[1][i] = (float) g_video_1[k];
+	}
+	SCB_InvalidateDCache_by_Addr((uint32_t*) g_video_1, sizeof(g_video_1));
+
+	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=4)
+	{
+		g_data_packet.data_output[2][i] = g_fft_mag[i] * AD_TO_VOLT;
+	}
+	g_data_packet.data_output[2][0] = 0;
+
+	for(int i=0,k=0; i < GRAPH_SAMPLES; i++,k+=4)
+	{
+		g_data_packet.data_output[3][i] = g_fft_mag[i + (GRAPH_SAMPLES - 1)] * AD_TO_VOLT;
+	}
+	g_data_packet.data_output[3][0] = 0;
+#endif
 
 	uint64_t time_now = get_1ms_tick_counter();
 	static uint64_t last_time = 0;
@@ -209,7 +267,11 @@ void init_timers()
 void init_dac()
 {
 	HAL_StatusTypeDef ret;
+#ifdef VIRTUAL_REF
+	ret = HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1,(uint32_t *)dac_waveform_bin, DAC_SAMPLES,DAC_ALIGN_12B_R);
+#else
 	ret = HAL_DAC_Start_DMA(&hdac1, DAC_CHANNEL_1,(uint32_t *)dac_waveform, DAC_SAMPLES,DAC_ALIGN_12B_R);
+#endif
 	if(ret != HAL_OK)
 	{
 		Error_Handler();
@@ -293,11 +355,11 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-	static float frequency = 4000;
+	static float frequency = 16;
 
 	if(GPIO_Pin == GPIO_PIN_13)
 	{
-		frequency = frequency + (16*100);
+		frequency = frequency + 16;
 		set_out_freq(frequency, FMCW_ECHO);
 	}
 }
